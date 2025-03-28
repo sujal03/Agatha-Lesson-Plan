@@ -20,6 +20,21 @@ BASE_URL = os.getenv("BASE_URL")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Home route
+@app.route('/', methods=['GET'])
+def home():
+    """Home route to confirm the API is running."""
+    return jsonify({
+        "message": "Welcome to the Lesson Plan Generator API",
+        "status": "running",
+        "endpoints": {
+            "/": "GET - Home route",
+            "/lesson-plan-generation": "POST - Generate and push a lesson plan",
+            "/pdf-parse": "POST - Parse PDF and push curriculum data"
+        },
+        "version": "1.0.0"  # You can update this as needed
+    }), 200
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
