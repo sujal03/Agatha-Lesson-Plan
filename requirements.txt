@@ -1,0 +1,15 @@
+python-dotenv
+pymongo[srv]==3.12  
+Flask
+flask-cors
+Flask-PyMongo
+requests
+pytesseract
+fitz
+pdf2image
+pymupdf == 1.25.4
+langchain 
+langchain-community
+google
+google-generativeai
+pypdf
