@@ -156,11 +156,8 @@ def analyze_curriculum_text(text: str) -> str:
         response = model.generate_content(prompt)
         result = response.text.replace('```json', '').replace('```', '').strip()
         json.loads(result)  # Validate JSON
+        print(result)
         return result
-    except json.JSONDecodeError as e:
-        fallback = json.dumps({"title": "Unknown", "learningObjectives": ["Learn basics"], "keyConcepts": ["Basics"]})
-        print(f"Invalid JSON response: {str(e)}. Returning fallback: {fallback}")
-        return fallback
     except Exception as e:
         raise Exception(f"Error analyzing curriculum text: {str(e)}")
 
@@ -198,7 +195,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         context_json = json.dumps(context, cls=MongoJSONEncoder)
 
         purpose = _generate_section(
-            "Purpose",
             f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- Overview with {country} context\n"
@@ -209,7 +205,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         )
 
         objectives = _generate_section(
-            "Objectives",
             f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- 4-6 measurable objectives based on {json.dumps(context['learningObjectives'], cls=MongoJSONEncoder)}\n"
@@ -219,7 +214,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         )
 
         planning = _generate_section(
-            "Planning & Preparation",
             f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- Materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)}\n"
@@ -230,7 +224,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         )
 
         prior_knowledge = _generate_section(
-            "Prior Knowledge",
             f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- Prerequisites based on {topic}\n"
@@ -256,7 +249,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         lesson_flow = lesson_flow.strip()
 
         extension = _generate_section(
-            "Extension/Enrichment",
             f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- Cross-curricular projects linking to {json.dumps(context['keyConcepts'])}\n"
@@ -265,7 +257,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         )
 
         assessment_tools = _generate_section(
-            "Assessment Tools",
             f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
             f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
             f"- Comprehensive assessments based on {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
@@ -275,7 +266,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         # Compile full lesson plan
         full_lesson_plan = f"""
-{topic} Lesson Plan
+#{topic} Lesson Plan
 ## 1. Purpose
 {purpose}
 
