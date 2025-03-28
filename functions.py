@@ -155,9 +155,47 @@ def analyze_curriculum_text(text: str) -> str:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt)
         result = response.text.replace('```json', '').replace('```', '').strip()
-        json.loads(result)  # Validate JSON
-        print(result)
+        json.loads(result)  
         return result
+    except Exception as e:
+        raise Exception(f"Error analyzing curriculum text: {str(e)}")
+
+
+def analyze_curriculum_text(text: str) -> str:
+    prompt = f"""
+    You are an expert curriculum analyzer. Extract detailed information from the given curriculum document and return it in the following JSON structure only:
+
+    {{
+        "title": "Unit title",
+        "duration": "Duration",
+        "learningObjectives": ["List of learning objectives"],
+        "keyConcepts": ["List of key topics and concepts"],
+        "standards": [{{"code": "Standard code", "description": "Description of the standard"}}],
+        "assessments": [{{"type": "Type of assessment", "criteria": "Assessment criteria"}}],
+        "materials": [{{"externalLinks": ["Array of external resource URLs"], "description": "Description of resources"}}],
+        "tools": ["List of tools required"]
+    }}
+
+    Instructions:
+    1. Extract ONLY information explicitly present in the document
+    2. Return data in the exact JSON structure shown above
+    3. Include ONLY fields with available information (omit entire fields/keys if data is missing)
+    4. Do NOT add placeholder text like "Not specified" or empty arrays/objects
+    5. Return ONLY the JSON object without any additional text or formatting
+
+    Document text:
+    {text}
+    """
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        response = model.generate_content(prompt)
+        result = response.text.replace('```json', '').replace('```', '').strip()
+        json.loads(result)  # Validate JSON
+        return result
+    except json.JSONDecodeError as e:
+        fallback = json.dumps({"title": "Unknown", "learningObjectives": ["Learn basics"], "keyConcepts": ["Basics"]})
+        print(f"Invalid JSON response: {str(e)}. Returning fallback: {fallback}")
+        return fallback
     except Exception as e:
         raise Exception(f"Error analyzing curriculum text: {str(e)}")
 
@@ -195,97 +233,98 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         context_json = json.dumps(context, cls=MongoJSONEncoder)
 
         purpose = _generate_section(
-            f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- Overview with {country} context\n"
-            f"- 3-5 {country} curriculum standards (use codes: {', '.join([s['code'] for s in context['standards']])})\n"
-            f"- Real-world {country} applications\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Purpose",
+            prompt=f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- Overview with {country} context\n"
+                   f"- 3-5 {country} curriculum standards (use codes: {', '.join([s['code'] for s in context['standards']])})\n"
+                   f"- Real-world {country} applications\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         objectives = _generate_section(
-            f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- 4-6 measurable objectives based on {json.dumps(context['learningObjectives'], cls=MongoJSONEncoder)}\n"
-            f"- Activities and assessments from {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Objectives",
+            prompt=f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- 4-6 measurable objectives based on {json.dumps(context['learningObjectives'], cls=MongoJSONEncoder)}\n"
+                   f"- Activities and assessments from {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         planning = _generate_section(
-            f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- Materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)}\n"
-            f"- Tools: {json.dumps(context['tools'])}\n"
-            f"- Challenges and solutions\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Planning & Preparation",
+            prompt=f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- Materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)}\n"
+                   f"- Tools: {json.dumps(context['tools'])}\n"
+                   f"- Challenges and solutions\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         prior_knowledge = _generate_section(
-            f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- Prerequisites based on {topic}\n"
-            f"- Diagnostic methods\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Prior Knowledge",
+            prompt=f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- Prerequisites based on {topic}\n"
+                   f"- Diagnostic methods\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         lesson_flow = ""
         for day in range(1, days + 1):
             daily_content = _generate_section(
-                f"Day {day}",
-                f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-                f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-                f"Include sections:\n"
-                f"### Introduction\n### Mini-Lesson\n### Guided Practice\n### Independent Practice\n### Assessment\n### Wrap-Up\n"
-                f"Include {country}-specific examples and 50-minute timing breakdown.\n"
-                f"Use materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)} and tools: {json.dumps(context['tools'])}\n"
-                f"Return only the content under these headings.\n"
-                f"Context: {context_json}"
+                section_name=f"Day {day}",
+                prompt=f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+                       f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                       f"Include sections:\n"
+                       f"### Introduction\n### Mini-Lesson\n### Guided Practice\n### Independent Practice\n### Assessment\n### Wrap-Up\n"
+                       f"Include {country}-specific examples and 50-minute timing breakdown.\n"
+                       f"Use materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)} and tools: {json.dumps(context['tools'])}\n"
+                       f"Return only the content under these headings.\n"
+                       f"Context: {context_json}"
             )
             lesson_flow += f"## Day {day}\n{daily_content}\n\n"
         lesson_flow = lesson_flow.strip()
 
         extension = _generate_section(
-            f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- Cross-curricular projects linking to {json.dumps(context['keyConcepts'])}\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Extension/Enrichment",
+            prompt=f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- Cross-curricular projects linking to {json.dumps(context['keyConcepts'])}\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         assessment_tools = _generate_section(
-            f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-            f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
-            f"- Comprehensive assessments based on {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
-            f"Return only the content under this section.\n"
-            f"Context: {context_json}"
+            section_name="Assessment Tools",
+            prompt=f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"- Comprehensive assessments based on {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
+                   f"Return only the content under this section.\n"
+                   f"Context: {context_json}"
         )
 
         # Compile full lesson plan
         full_lesson_plan = f"""
-#{topic} Lesson Plan
-## 1. Purpose
+{topic} Lesson Plan
+
 {purpose}
 
-## 2. Objectives
 {objectives}
 
-## 3. Planning & Preparation
 {planning}
 
-## 4. Prior Knowledge
 {prior_knowledge}
 
 ## 5. Lesson Flow
 {lesson_flow}
 
-## 6. Extension/Enrichment
 {extension}
 
-## 7. Assessment Tools
 {assessment_tools}
         """.strip()
 
@@ -293,8 +332,8 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
     except Exception as e:
         raise Exception(f"Failed to generate lesson plan: {str(e)}")
-
-
+ 
+ 
 def _generate_section(section_name: str, prompt: str) -> str:
     try:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
@@ -302,4 +341,3 @@ def _generate_section(section_name: str, prompt: str) -> str:
         return response.text.strip()
     except Exception as e:
         raise Exception(f"Error generating {section_name} section: {str(e)}")
-
