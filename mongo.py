@@ -79,4 +79,28 @@ def get_lesson_data(collection, mongo_id: str):
     except Exception as e:
         raise Exception(f"Failed to retrieve data: {str(e)}")
     
-    
+def get_grade_name(grade_id: str) -> str:
+    """
+    Fetch the grade name from the grades collection using the grade_id.
+    """
+    mongo_client = None
+    try:
+        mongo_client = get_mongodb_connection()
+        db = mongo_client.get_database(db_name)  
+        grades_collection = db.get_collection("grades")  
+        
+        # Check if grade_id is a valid ObjectId
+        if ObjectId.is_valid(grade_id):
+            grade_doc = grades_collection.find_one({"_id": ObjectId(grade_id)})
+        else:
+            grade_doc = grades_collection.find_one({"_id": grade_id})  
+        
+        if grade_doc:
+            return grade_doc.get("name", "Unknown Grade")
+        return "Unknown Grade"
+    except Exception as e:
+        logger.error(f"Failed to fetch grade name for ID {grade_id}: {str(e)}")
+        return "Unknown Grade"
+    finally:
+        if mongo_client:
+            mongo_client.close()

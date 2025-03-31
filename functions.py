@@ -11,7 +11,7 @@ import google.generativeai as genai
 from pdf2image import convert_from_path
 import pytesseract
 import re
-from mongo import get_lesson_data
+from mongo import get_lesson_data, get_grade_name
 from bson.objectid import ObjectId
 
 
@@ -30,7 +30,6 @@ class MongoJSONEncoder(json.JSONEncoder):
             return str(obj)
         return super().default(obj)
 
-
 def extract_images_from_pdf(pdf_path: str) -> List[bytes]:
     pdf_document = fitz.open(pdf_path)
     images = []
@@ -44,10 +43,8 @@ def extract_images_from_pdf(pdf_path: str) -> List[bytes]:
     pdf_document.close()
     return images
 
-
 def encode_image_to_base64(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("utf-8")
-
 
 def perform_ocr_on_pdf(pdf_path: str) -> List[str]:
     try:
@@ -55,7 +52,6 @@ def perform_ocr_on_pdf(pdf_path: str) -> List[str]:
         return [pytesseract.image_to_string(page, lang='eng').strip() for page in pages]
     except Exception as e:
         raise Exception(f"Error performing OCR with Tesseract: {str(e)}")
-
 
 def extract_pdf_content(pdf_file: Any) -> Tuple[str, List[Document], Dict[str, Any]]:
     temp_file_path = None
@@ -160,46 +156,6 @@ def analyze_curriculum_text(text: str) -> str:
     except Exception as e:
         raise Exception(f"Error analyzing curriculum text: {str(e)}")
 
-
-def analyze_curriculum_text(text: str) -> str:
-    prompt = f"""
-    You are an expert curriculum analyzer. Extract detailed information from the given curriculum document and return it in the following JSON structure only:
-
-    {{
-        "title": "Unit title",
-        "duration": "Duration",
-        "learningObjectives": ["List of learning objectives"],
-        "keyConcepts": ["List of key topics and concepts"],
-        "standards": [{{"code": "Standard code", "description": "Description of the standard"}}],
-        "assessments": [{{"type": "Type of assessment", "criteria": "Assessment criteria"}}],
-        "materials": [{{"externalLinks": ["Array of external resource URLs"], "description": "Description of resources"}}],
-        "tools": ["List of tools required"]
-    }}
-
-    Instructions:
-    1. Extract ONLY information explicitly present in the document
-    2. Return data in the exact JSON structure shown above
-    3. Include ONLY fields with available information (omit entire fields/keys if data is missing)
-    4. Do NOT add placeholder text like "Not specified" or empty arrays/objects
-    5. Return ONLY the JSON object without any additional text or formatting
-
-    Document text:
-    {text}
-    """
-    try:
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-        response = model.generate_content(prompt)
-        result = response.text.replace('```json', '').replace('```', '').strip()
-        json.loads(result)  # Validate JSON
-        return result
-    except json.JSONDecodeError as e:
-        fallback = json.dumps({"title": "Unknown", "learningObjectives": ["Learn basics"], "keyConcepts": ["Basics"]})
-        print(f"Invalid JSON response: {str(e)}. Returning fallback: {fallback}")
-        return fallback
-    except Exception as e:
-        raise Exception(f"Error analyzing curriculum text: {str(e)}")
-
-
 def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
     try:
         # Validate mongo_id
@@ -214,10 +170,22 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         # Extract unit and curriculum details
         unit = mongo_data.get("units", [{}])[0]
         topic = unit.get("title", "Untitled Lesson")
-        grade = mongo_data.get("gradeId", ["Unknown Grade"])[0]
+        
+        # Extract gradeId (array with single ID) and fetch grade name
+        grade_id = mongo_data.get("gradeId", ["Unknown Grade"])[0]  # Get first element of gradeId array
+        grade = get_grade_name(grade_id)
+        
+        # Extract duration and convert to days (assuming 1 week = 5 days for simplicity)
         duration_str = unit.get("duration", "1 weeks")
-        days = int(duration_str.split()[0]) if duration_str.split()[0].isdigit() else 1
-        country = mongo_data.get("countryId", [{}])[0].get("name", "Unknown Country")
+        duration_parts = duration_str.split()
+        if duration_parts and duration_parts[0].isdigit():
+            weeks = int(duration_parts[0])
+            days = weeks * 5  # Convert weeks to days (adjust multiplier as needed)
+        else:
+            days = 5  # Default to 5 days if parsing fails
+        
+        # Extract country directly from "country" field
+        country = mongo_data.get("country", "Unknown Country")
 
         # Prepare context for prompts
         context = {
@@ -235,7 +203,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         purpose = _generate_section(
             section_name="Purpose",
             prompt=f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Overview with {country} context\n"
                    f"- 3-5 {country} curriculum standards (use codes: {', '.join([s['code'] for s in context['standards']])})\n"
                    f"- Real-world {country} applications\n"
@@ -246,7 +214,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         objectives = _generate_section(
             section_name="Objectives",
             prompt=f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- 4-6 measurable objectives based on {json.dumps(context['learningObjectives'], cls=MongoJSONEncoder)}\n"
                    f"- Activities and assessments from {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
                    f"Return only the content under this section.\n"
@@ -256,7 +224,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         planning = _generate_section(
             section_name="Planning & Preparation",
             prompt=f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)}\n"
                    f"- Tools: {json.dumps(context['tools'])}\n"
                    f"- Challenges and solutions\n"
@@ -267,7 +235,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         prior_knowledge = _generate_section(
             section_name="Prior Knowledge",
             prompt=f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Prerequisites based on {topic}\n"
                    f"- Diagnostic methods\n"
                    f"Return only the content under this section.\n"
@@ -279,7 +247,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
             daily_content = _generate_section(
                 section_name=f"Day {day}",
                 prompt=f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
-                       f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                       f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                        f"Include sections:\n"
                        f"### Introduction\n### Mini-Lesson\n### Guided Practice\n### Independent Practice\n### Assessment\n### Wrap-Up\n"
                        f"Include {country}-specific examples and 50-minute timing breakdown.\n"
@@ -293,7 +261,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         extension = _generate_section(
             section_name="Extension/Enrichment",
             prompt=f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Cross-curricular projects linking to {json.dumps(context['keyConcepts'])}\n"
                    f"Return only the content under this section.\n"
                    f"Context: {context_json}"
@@ -302,7 +270,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         assessment_tools = _generate_section(
             section_name="Assessment Tools",
             prompt=f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-                   f"Use Markdown format with #, ##, ### headings only, no ``` marks.\n"
+                   f"Use Markdown format with z##, ### headings only, no ``` marks.\n"
                    f"- Comprehensive assessments based on {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
                    f"Return only the content under this section.\n"
                    f"Context: {context_json}"
@@ -310,7 +278,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         # Compile full lesson plan
         full_lesson_plan = f"""
-{topic} Lesson Plan
+# {topic} Lesson Plan
 
 {purpose}
 
