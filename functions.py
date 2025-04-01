@@ -11,8 +11,13 @@ import google.generativeai as genai
 from pdf2image import convert_from_path
 import pytesseract
 import re
-from mongo import get_lesson_data, get_grade_name
+from mongo import get_lesson_data, get_grade_name, get_subject_name
 from bson.objectid import ObjectId
+import json
+import logging
+
+# Assuming logger is set up elsewhere in your code
+logger = logging.getLogger(__name__)
 
 
 # Load environment variables from .env file
@@ -128,7 +133,6 @@ def analyze_curriculum_text(text: str) -> str:
 
     {{
         "title": "Unit title",
-        "duration": "Duration",
         "learningObjectives": ["List of learning objectives"],
         "keyConcepts": ["List of key topics and concepts"],
         "standards": [{{"code": "Standard code", "description": "Description of the standard"}}],
@@ -138,11 +142,21 @@ def analyze_curriculum_text(text: str) -> str:
     }}
 
     Instructions:
-    1. Extract ONLY information explicitly present in the document
-    2. Return data in the exact JSON structure shown above
-    3. Include ONLY fields with available information (omit entire fields/keys if data is missing)
-    4. Do NOT add placeholder text like "Not specified" or empty arrays/objects
-    5. Return ONLY the JSON object without any additional text or formatting
+    1. First, extract information explicitly present in the document
+    2. For any fields not explicitly present, derive reasonable values from the document's context where possible:
+       - title: Use main heading or first significant topic if not explicitly stated
+       - learningObjectives: Extract from goals, outcomes, or lesson content
+       - keyConcepts: Identify from main topics or recurring themes
+       - standards: Infer from educational context or objectives if codes aren't provided
+       - assessments: Deduce from evaluation mentions or objective testing implications
+       - materials: Extract from resource references or content requirements
+       - tools: Infer from activity descriptions or content delivery methods
+    3. Do NOT extract or infer the 'duration' field from the document - it will be provided separately
+    4. Return data in the exact JSON structure shown above
+    5. Include all fields (except 'duration'), using derived data if explicit data is missing
+    6. Do NOT add placeholder text like "Not specified" or empty arrays/objects
+    7. Ensure all strings in the JSON output have control characters (e.g., newlines, tabs) properly escaped (e.g., \\n, \\t)
+    8. Return ONLY the JSON object without any additional text or formatting
 
     Document text:
     {text}
@@ -151,9 +165,29 @@ def analyze_curriculum_text(text: str) -> str:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt)
         result = response.text.replace('```json', '').replace('```', '').strip()
-        json.loads(result)  
+        
+        # Log raw result for debugging
+        logger.debug(f"Raw analysis result: {repr(result)}")
+        
+        # Attempt to parse JSON
+        try:
+            json.loads(result)
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parsing failed: {str(e)}. Attempting to sanitize...")
+            # Replace common unescaped control characters
+            result = result.encode().decode('unicode_escape')  # Escape control characters
+            result = ''.join(c for c in result if ord(c) >= 32 or c in '\n\t\r')  # Remove non-printable chars except \n, \t, \r
+            result = result.replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r')  # Escape remaining
+            try:
+                json.loads(result)
+                logger.info("Successfully sanitized JSON")
+            except json.JSONDecodeError as e2:
+                logger.error(f"Sanitization failed: {str(e2)}")
+                raise  # Re-raise if still invalid
+        
         return result
     except Exception as e:
+        logger.error(f"Failed to analyze curriculum text: {str(e)}", exc_info=True)
         raise Exception(f"Error analyzing curriculum text: {str(e)}")
 
 def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
@@ -172,24 +206,29 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         topic = unit.get("title", "Untitled Lesson")
         
         # Extract gradeId (array with single ID) and fetch grade name
-        grade_id = mongo_data.get("gradeId", ["Unknown Grade"])[0]  # Get first element of gradeId array
+        grade_id = mongo_data.get("gradeId", ["Unknown Grade"])[0]
         grade = get_grade_name(grade_id)
         
-        # Extract duration and convert to days (assuming 1 week = 5 days for simplicity)
-        duration_str = unit.get("duration", "1 weeks")
-        duration_parts = duration_str.split()
-        if duration_parts and duration_parts[0].isdigit():
-            weeks = int(duration_parts[0])
-            days = weeks * 5  # Convert weeks to days (adjust multiplier as needed)
+        # Extract subjectId and fetch subject name
+        subject_id = mongo_data.get("subjectId", "Unknown Subject")
+        subject = get_subject_name(subject_id)
+        
+        # Extract duration in days and convert to integer
+        duration_str = unit.get("duration", "10")  # Default to 10 days if not provided
+        # Handle case where duration might include "days" suffix
+        duration_clean = duration_str.split()[0] if " " in duration_str else duration_str
+        if duration_clean.isdigit():
+            days = int(duration_clean)
         else:
-            days = 5  # Default to 5 days if parsing fails
+            days = 10  # Default to 10 days if parsing fails
         
         # Extract country directly from "country" field
         country = mongo_data.get("country", "Unknown Country")
 
-        # Prepare context for prompts
+        # Prepare context for prompts, including subject
         context = {
             "title": topic,
+            "subject": subject, 
             "duration": f"{days} days",
             "learningObjectives": unit.get("learningObjectives", ["Understand basic concepts"]),
             "keyConcepts": unit.get("keyConcepts", [topic]),
@@ -202,7 +241,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         purpose = _generate_section(
             section_name="Purpose",
-            prompt=f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+            prompt=f"Generate the Purpose section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students, following {country} curriculum standards.\n"
                    f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Overview with {country} context\n"
                    f"- 3-5 {country} curriculum standards (use codes: {', '.join([s['code'] for s in context['standards']])})\n"
@@ -213,7 +252,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         objectives = _generate_section(
             section_name="Objectives",
-            prompt=f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+            prompt=f"Generate the Objectives section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students, following {country} curriculum standards.\n"
                    f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- 4-6 measurable objectives based on {json.dumps(context['learningObjectives'], cls=MongoJSONEncoder)}\n"
                    f"- Activities and assessments from {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
@@ -223,7 +262,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         planning = _generate_section(
             section_name="Planning & Preparation",
-            prompt=f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+            prompt=f"Generate the Planning & Preparation section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students.\n"
                    f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Materials: {json.dumps(context['materials'], cls=MongoJSONEncoder)}\n"
                    f"- Tools: {json.dumps(context['tools'])}\n"
@@ -234,7 +273,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         prior_knowledge = _generate_section(
             section_name="Prior Knowledge",
-            prompt=f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+            prompt=f"Generate the Prior Knowledge section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students.\n"
                    f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Prerequisites based on {topic}\n"
                    f"- Diagnostic methods\n"
@@ -246,7 +285,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         for day in range(1, days + 1):
             daily_content = _generate_section(
                 section_name=f"Day {day}",
-                prompt=f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' for {grade} students, following {country} curriculum standards.\n"
+                prompt=f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' in {subject} for {grade} students, following {country} curriculum standards.\n"
                        f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                        f"Include sections:\n"
                        f"### Introduction\n### Mini-Lesson\n### Guided Practice\n### Independent Practice\n### Assessment\n### Wrap-Up\n"
@@ -260,7 +299,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         extension = _generate_section(
             section_name="Extension/Enrichment",
-            prompt=f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
+            prompt=f"Generate the Extension/Enrichment section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students.\n"
                    f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
                    f"- Cross-curricular projects linking to {json.dumps(context['keyConcepts'])}\n"
                    f"Return only the content under this section.\n"
@@ -269,14 +308,13 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
         assessment_tools = _generate_section(
             section_name="Assessment Tools",
-            prompt=f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' for {grade} students.\n"
-                   f"Use Markdown format with z##, ### headings only, no ``` marks.\n"
+            prompt=f"Generate the Assessment Tools section for a {days}-day lesson plan on '{topic}' in {subject} for {grade} students.\n"
+                   f"Use Markdown format with ##, ### headings only, no ``` marks.\n"  # Fixed typo 'z##'
                    f"- Comprehensive assessments based on {json.dumps(context['assessments'], cls=MongoJSONEncoder)}\n"
                    f"Return only the content under this section.\n"
                    f"Context: {context_json}"
         )
 
-        # Compile full lesson plan
         full_lesson_plan = f"""
 # {topic} Lesson Plan
 
@@ -288,7 +326,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
 
 {prior_knowledge}
 
-## 5. Lesson Flow
+## Lesson Flow
 {lesson_flow}
 
 {extension}
@@ -301,7 +339,6 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
     except Exception as e:
         raise Exception(f"Failed to generate lesson plan: {str(e)}")
  
- 
 def _generate_section(section_name: str, prompt: str) -> str:
     try:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
@@ -309,3 +346,4 @@ def _generate_section(section_name: str, prompt: str) -> str:
         return response.text.strip()
     except Exception as e:
         raise Exception(f"Error generating {section_name} section: {str(e)}")
+    

@@ -104,3 +104,32 @@ def get_grade_name(grade_id: str) -> str:
     finally:
         if mongo_client:
             mongo_client.close()
+
+
+def get_subject_name(subject_id: str) -> str:
+    """
+    Fetch the subject name from the subjects collection using the subject_id.
+    """
+    mongo_client = None
+    try:
+        mongo_client = get_mongodb_connection()
+        db = mongo_client.get_database(db_name)
+        subjects_collection = db.get_collection("subjects")  # Assuming collection is named 'subjects'
+        
+        # Check if subject_id is a valid ObjectId
+        if ObjectId.is_valid(subject_id):
+            subject_doc = subjects_collection.find_one({"_id": ObjectId(subject_id)})
+        else:
+            subject_doc = subjects_collection.find_one({"_id": subject_id})
+        
+        if subject_doc:
+            return subject_doc.get("name", "Unknown Subject")
+        return "Unknown Subject"
+    except Exception as e:
+        logger.error(f"Failed to fetch subject name for ID {subject_id}: {str(e)}")
+        return "Unknown Subject"
+    finally:
+        if mongo_client:
+            mongo_client.close()
+
+            

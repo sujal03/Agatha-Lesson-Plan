@@ -46,6 +46,161 @@ def home():
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
+def push_to_curriculum_api(mongo_id, data, authorization_token):
+    CURRICULUM_API_URL = f"{BASE_URL}/curriculum/{mongo_id}/units"
+    try:
+        headers = {
+            "Authorization": f"Bearer {authorization_token}",
+            "Content-Type": "application/json"
+        }
+        logger.debug(f"Pushing to curriculum API: {CURRICULUM_API_URL} with data: {data}")
+        response = requests.post(CURRICULUM_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        logger.info(f"Successfully pushed to curriculum API for mongo_id: {mongo_id}")
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to push to curriculum API: {str(e)}")
+        raise
+
+@app.route('/pdf-parse', methods=['POST'])
+def pdf_parsing():
+    try:
+        logger.debug(f"Received PDF parse request: {request.form}")
+        
+        # Validate file presence and type
+        if 'pdf' not in request.files:
+            logger.warning("No file part in request")
+            return jsonify({"error": "No file uploaded", "status": "failure"}), 400
+
+        file = request.files['pdf']
+        if file.filename == '':
+            logger.warning("Empty filename received")
+            return jsonify({"error": "Empty filename", "status": "failure"}), 400
+        
+        if not allowed_file(file.filename):
+            logger.warning(f"Invalid file type: {file.filename}")
+            return jsonify({"error": "Invalid file type. Only PDF allowed", "status": "failure"}), 400
+
+        # Extract form data
+        mongo_id = request.form.get('mongo_id')
+        authorization_token = request.form.get('authorization_token')
+        duration = request.form.get('duration')
+
+        # Validate required form fields
+        missing_form_fields = []
+        if not mongo_id:
+            missing_form_fields.append("mongo_id")
+        if not authorization_token:
+            missing_form_fields.append("authorization_token")
+        if not duration:
+            missing_form_fields.append("duration")
+
+        if missing_form_fields:
+            logger.warning(f"Missing required form fields: {missing_form_fields}")
+            return jsonify({
+                "error": "Missing required fields",
+                "status": "failure",
+                "missing_fields": missing_form_fields
+            }), 400
+
+        # Extract and analyze PDF content
+        logger.info(f"Processing PDF for mongo_id: {mongo_id}")
+        full_text, documents, extracted_metadata = extract_pdf_content(file)
+        analysis = analyze_curriculum_text(full_text)
+        
+        # Ensure analysis is parsed correctly
+        try:
+            units_data = json.loads(analysis)
+            # If units_data is a single dict, wrap it in a list
+            if isinstance(units_data, dict):
+                units_data = [units_data]
+            elif not isinstance(units_data, list):
+                raise ValueError("Analysis result must be a JSON object or array")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from analyze_curriculum_text: {str(e)}")
+            return jsonify({
+                "error": "Invalid curriculum analysis format",
+                "status": "failure"
+            }), 500
+
+        all_units_data = []
+        all_missing_fields = []
+        
+        for unit_data in units_data:
+            if not isinstance(unit_data, dict):
+                logger.error(f"Invalid unit_data type: expected dict, got {type(unit_data)}")
+                return jsonify({
+                    "error": "Invalid unit data format",
+                    "status": "failure"
+                }), 500
+                
+            processed_unit = {"status": "Draft"}
+            
+            def assign_field(field_name, default_value, expected_type, data_key=None):
+                key = data_key or field_name
+                if key in unit_data and isinstance(unit_data[key], expected_type) and unit_data[key]:
+                    processed_unit[field_name] = unit_data[key]
+                else:
+                    processed_unit[field_name] = default_value
+
+            # Assign all fields with their default values for missing cases
+            assign_field("title", "This field is missing", str)
+            assign_field("duration", duration, str)
+            assign_field("learningObjectives", ["This field is missing"], list)
+            assign_field("keyConcepts", ["This field is missing"], list)
+            assign_field("standards", [{"code": "N/A", "description": "This field is missing"}], list)
+            assign_field("assessments", [{"type": "N/A", "criteria": "This field is missing"}], list)
+            assign_field("materials", [{"externalLinks": [], "description": "This field is missing"}], list)
+            assign_field("tools", ["This field is missing"], list)
+
+            # Identify missing fields
+            missing_fields = [
+                field for field, value in processed_unit.items() 
+                if field != "status" and (
+                    (isinstance(value, str) and value == "This field is missing") or
+                    (isinstance(value, list) and value in [["This field is missing"],
+                                                          [{"code": "N/A", "description": "This field is missing"}],
+                                                          [{"type": "N/A", "criteria": "This field is missing"}],
+                                                          [{"externalLinks": [], "description": "This field is missing"}]])
+                )
+            ]
+            
+            if missing_fields:
+                all_missing_fields.extend([f"{processed_unit.get('title', 'Unnamed Unit')}: {field}" for field in missing_fields])
+            
+            all_units_data.append(processed_unit)
+
+        # If there are any missing fields, return 400 with the list
+        if all_missing_fields:
+            logger.warning(f"Missing required fields in PDF data: {all_missing_fields}")
+            return jsonify({
+                "error": "Incomplete curriculum data",
+                "status": "failure",
+                "missing_fields": all_missing_fields
+            }), 400
+
+        # If we reach here, all required data is present
+        # Push all units to API
+        api_responses = []
+        for unit_data in all_units_data:
+            api_response = push_to_curriculum_api(mongo_id, unit_data, authorization_token)
+            api_responses.append(api_response)
+
+        logger.info(f"PDF parsed and all data pushed successfully for mongo_id: {mongo_id}")
+        return jsonify({
+            "api_responses": api_responses,
+            "status": "success",
+            "message": "All curriculum data processed and pushed successfully"
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in pdf-parse: {str(e)}", exc_info=True)
+        return jsonify({
+            "error": str(e),
+            "status": "failure",
+            "details": "An unexpected error occurred while processing your request"
+        }), 500
+
 def push_to_api(title, curriculum_id, status, lesson_plan, authorization_token):
     temp_md_path = os.path.join(app.config['UPLOAD_FOLDER'], f"lesson_plan_{curriculum_id}.md")
     API_URL = f"{BASE_URL}/lessons"
@@ -130,110 +285,6 @@ def lesson_plan_generator():
 
     except Exception as e:
         logger.error(f"Error in lesson-plan-generation: {str(e)}", exc_info=True)
-        return jsonify({
-            "error": str(e),
-            "status": "failure",
-            "details": "An unexpected error occurred while processing your request"
-        }), 500
-
-def push_to_curriculum_api(mongo_id, data, authorization_token):
-    CURRICULUM_API_URL = f"{BASE_URL}/curriculum/{mongo_id}/units"
-    try:
-        headers = {
-            "Authorization": f"Bearer {authorization_token}",
-            "Content-Type": "application/json"
-        }
-        logger.debug(f"Pushing to curriculum API: {CURRICULUM_API_URL} with data: {data}")
-        response = requests.post(CURRICULUM_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        logger.info(f"Successfully pushed to curriculum API for mongo_id: {mongo_id}")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to push to curriculum API: {str(e)}")
-        raise
-
-@app.route('/pdf-parse', methods=['POST'])
-def pdf_parsing():
-    try:
-        logger.debug(f"Received PDF parse request: {request.form}")
-        
-        # Validate file presence and type
-        if 'pdf' not in request.files:
-            logger.warning("No file part in request")
-            return jsonify({"error": "No file uploaded", "status": "failure"}), 400
-
-        file = request.files['pdf']
-        if file.filename == '':
-            logger.warning("Empty filename received")
-            return jsonify({"error": "Empty filename", "status": "failure"}), 400
-        
-        if not allowed_file(file.filename):
-            logger.warning(f"Invalid file type: {file.filename}")
-            return jsonify({"error": "Invalid file type. Only PDF allowed", "status": "failure"}), 400
-
-        # Extract form data
-        mongo_id = request.form.get('mongo_id')
-        authorization_token = request.form.get('authorization_token')
-
-        if not mongo_id:
-            logger.warning("Missing mongo_id in request")
-            return jsonify({"error": "Missing mongo_id", "status": "failure"}), 400
-        if not authorization_token:
-            logger.warning("Missing authorization_token in request")
-            return jsonify({"error": "Missing authorization_token", "status": "failure"}), 400
-
-        # Extract and analyze PDF content
-        logger.info(f"Processing PDF for mongo_id: {mongo_id}")
-        full_text, documents, extracted_metadata = extract_pdf_content(file)
-        analysis = analyze_curriculum_text(full_text)
-        data = json.loads(analysis)
-
-        # Construct unit_data
-        unit_data = {"status": "Draft"}
-
-        def assign_field(field_name, default_value, expected_type, data_key=None):
-            key = data_key or field_name
-            if key in data and isinstance(data[key], expected_type) and data[key]:
-                unit_data[field_name] = data[key]
-            else:
-                unit_data[field_name] = default_value
-
-        assign_field("title", "This field is missing", str)
-        assign_field("duration", "This field is missing", str)
-        assign_field("learningObjectives", ["This field is missing"], list)
-        assign_field("keyConcepts", ["This field is missing"], list)
-        assign_field("standards", [{"code": "N/A", "description": "This field is missing"}], list)
-        assign_field("assessments", [{"type": "N/A", "criteria": "This field is missing"}], list)
-        assign_field("materials", [{"externalLinks": [], "description": "This field is missing"}], list)
-        assign_field("tools", ["This field is missing"], list)
-
-        # Identify missing fields
-        missing_fields = [
-            field for field, value in unit_data.items() 
-            if field != "status" and (
-                (isinstance(value, str) and value == "This field is missing") or
-                (isinstance(value, list) and value in [["This field is missing"], 
-                                                       [{"code": "N/A", "description": "This field is missing"}], 
-                                                       [{"type": "N/A", "criteria": "This field is missing"}], 
-                                                       [{"externalLinks": [], "description": "This field is missing"}]])
-            )
-        ]
-
-        # Push data to API
-        api_response = push_to_curriculum_api(mongo_id, unit_data, authorization_token)
-
-        # Prepare response
-        response_data = {"api_response": api_response, "status": "success"}
-        if missing_fields:
-            response_data["warning"] = f"Data pushed, but the following fields are missing or invalid: {', '.join(missing_fields)}"
-        else:
-            response_data["message"] = "Data pushed successfully with all fields present"
-
-        logger.info(f"PDF parsed and data pushed successfully for mongo_id: {mongo_id}")
-        return jsonify(response_data), 200
-
-    except Exception as e:
-        logger.error(f"Error in pdf-parse: {str(e)}", exc_info=True)
         return jsonify({
             "error": str(e),
             "status": "failure",
