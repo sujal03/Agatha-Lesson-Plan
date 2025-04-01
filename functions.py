@@ -144,7 +144,7 @@ def analyze_curriculum_text(text: str) -> str:
     Instructions:
     1. First, extract information explicitly present in the document
     2. For any fields not explicitly present, derive reasonable values from the document's context where possible:
-       - title: Use main heading or first significant topic if not explicitly stated
+       - title: Use main heading or first significant topic if not explicitly stated (Use simple title for better reading)
        - learningObjectives: Extract from goals, outcomes, or lesson content
        - keyConcepts: Identify from main topics or recurring themes
        - standards: Infer from educational context or objectives if codes aren't provided
@@ -286,7 +286,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
             daily_content = _generate_section(
                 section_name=f"Day {day}",
                 prompt=f"Generate a detailed lesson plan for Day {day} of a {days}-day lesson plan on '{topic}' in {subject} for {grade} students, following {country} curriculum standards.\n"
-                       f"Use Markdown format with ##, ### headings only, no ``` marks.\n"
+                       f"Use Markdown format with ### headings only, no ``` marks.\n"
                        f"Include sections:\n"
                        f"### Introduction\n### Mini-Lesson\n### Guided Practice\n### Independent Practice\n### Assessment\n### Wrap-Up\n"
                        f"Include {country}-specific examples and 50-minute timing breakdown.\n"
@@ -316,7 +316,7 @@ def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:
         )
 
         full_lesson_plan = f"""
-# {topic} Lesson Plan
+# {topic}
 
 {purpose}
 
