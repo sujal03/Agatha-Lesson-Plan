@@ -127,47 +127,70 @@ def extract_pdf_content(pdf_file: Any) -> Tuple[str, List[Document], Dict[str, A
             os.unlink(temp_file_path)
 
 
-def analyze_curriculum_text(text: str) -> str:
-    prompt = f"""
-    You are an expert curriculum analyzer. Extract detailed information from the given curriculum document and return it in the following JSON structure only:
-
-    {{
-        "title": "Unit title",
-        "learningObjectives": ["List of learning objectives"],
-        "keyConcepts": ["List of key topics and concepts"],
-        "standards": [{{"code": "Standard code", "description": "Description of the standard"}}],
-        "assessments": [{{"type": "Type of assessment", "criteria": "Assessment criteria"}}],
-        "materials": [{{"externalLinks": ["Array of external resource URLs"], "description": "Description of resources"}}],
-        "tools": ["List of tools required"]
-    }}
-
-    Instructions:
-    1. First, extract information explicitly present in the document
-    2. For any fields not explicitly present, derive reasonable values from the document's context where possible:
-       - title: Use main heading or first significant topic if not explicitly stated (Use simple title for better reading)
-       - learningObjectives: Extract from goals, outcomes, or lesson content
-       - keyConcepts: Identify from main topics or recurring themes
-       - standards: Infer from educational context or objectives if codes aren't provided
-       - assessments: Deduce from evaluation mentions or objective testing implications
-       - materials: Extract from resource references or content requirements
-       - tools: Infer from activity descriptions or content delivery methods
-    3. Do NOT extract or infer the 'duration' field from the document - it will be provided separately
-    4. Return data in the exact JSON structure shown above
-    5. Include all fields (except 'duration'), using derived data if explicit data is missing
-    6. Do NOT add placeholder text like "Not specified" or empty arrays/objects
-    7. Ensure all strings in the JSON output have control characters (e.g., newlines, tabs) properly escaped (e.g., \\n, \\t)
-    8. Return ONLY the JSON object without any additional text or formatting
-
-    Document text:
-    {text}
-    """
+def analyze_curriculum_text(text: str, mongo_id: str) -> str:
     try:
+        # Validate mongo_id
+        if not ObjectId.is_valid(mongo_id):
+            raise ValueError(f"Invalid MongoDB ObjectID: {mongo_id}")
+
+        # Fetch data from MongoDB
+        mongo_data = get_lesson_data(mongo_id)  # Assuming this function exists
+        if not mongo_data:
+            raise ValueError(f"No data found for MongoDB ID: {mongo_id}")
+
+        # Extract relevant context from MongoDB
+        country = mongo_data.get("country", "Unknown Country")
+        grade_id = mongo_data.get("gradeId", ["Unknown Grade"])[0]
+        grade = get_grade_name(grade_id) 
+        subject_id = mongo_data.get("subjectId", "Unknown Subject")
+        subject = get_subject_name(subject_id)  
+
+        # Build the prompt with MongoDB context
+        prompt = f"""
+        You are an expert curriculum analyzer. Extract detailed information from the given curriculum document and return it in the following JSON structure only:
+
+        {{
+            "title": "Unit title",
+            "learningObjectives": ["List of learning objectives"],
+            "keyConcepts": ["List of key topics and concepts"],
+            "standards": [{{"code": "Standard code", "description": "Description of the standard"}}],
+            "assessments": [{{"type": "Type of assessment", "criteria": "Assessment criteria"}}],
+            "materials": [{{"externalLinks": ["Array of external resource URLs"], "description": "Description of resources"}}],
+            "tools": ["List of tools required"]
+        }}
+
+        Instructions:
+        1. First, extract information explicitly present in the document
+        2. For any fields not explicitly present, derive reasonable values from the document's context where possible:
+           - title: Use main heading or first significant topic if not explicitly stated (Use simple title for better reading)
+           - learningObjectives: Extract from goals, outcomes, or lesson content relevant to {subject} for {grade} students in {country}
+           - keyConcepts: Identify from main topics or recurring themes related to {subject}
+           - standards: Infer from educational context or objectives, aligning with {country} curriculum standards for {grade}
+           - assessments: Deduce from evaluation mentions or objective testing implications for {subject}
+           - materials: Extract from resource references or content requirements suitable for {grade} in {country}
+           - tools: Infer from activity descriptions or content delivery methods appropriate for {subject} and {grade}
+        3. Do NOT extract or infer the 'duration' field from the document - it will be provided separately
+        4. Return data in the exact JSON structure shown above
+        5. Include all fields (except 'duration'), using derived data if explicit data is missing
+        6. Do NOT add placeholder text like "Not specified" or empty arrays/objects
+        7. Ensure all strings in the JSON output have control characters (e.g., newlines, tabs) properly escaped (e.g., \\n, \\t)
+        8. Return ONLY the JSON object without any additional text or formatting
+
+        Context:
+        - Country: {country}
+        - Subject: {subject}
+        - Grade: {grade}
+
+        Document text:
+        {text}
+        """
+        
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt)
         result = response.text.replace('```json', '').replace('```', '').strip()
         
         # Log raw result for debugging
-        logger.debug(f"Raw analysis result: {repr(result)}")
+        logger.debug(f"Raw analysis result for mongo_id {mongo_id}: {repr(result)}")
         
         # Attempt to parse JSON
         try:
@@ -187,7 +210,7 @@ def analyze_curriculum_text(text: str) -> str:
         
         return result
     except Exception as e:
-        logger.error(f"Failed to analyze curriculum text: {str(e)}", exc_info=True)
+        logger.error(f"Failed to analyze curriculum text for mongo_id {mongo_id}: {str(e)}", exc_info=True)
         raise Exception(f"Error analyzing curriculum text: {str(e)}")
 
 def generate_lesson_plan(mongo_id: str) -> Tuple[str, Dict[str, Any]]:

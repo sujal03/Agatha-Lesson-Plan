@@ -106,7 +106,7 @@ def pdf_parsing():
         # Extract and analyze PDF content
         logger.info(f"Processing PDF for mongo_id: {mongo_id}")
         full_text, documents, extracted_metadata = extract_pdf_content(file)
-        analysis = analyze_curriculum_text(full_text)
+        analysis = analyze_curriculum_text(full_text, mongo_id)
         
         # Ensure analysis is parsed correctly
         try:
